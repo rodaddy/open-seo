@@ -1,0 +1,58 @@
+---
+# Forge CI. Forgejo reads this folder instead of .github/workflows, whose
+# ubuntu-latest jobs no Forge runner carries; .github stays as upstream ships it.
+# Not ported: docker-build (buildx with the GitHub cache), and docker-image,
+# pr-preview and sourcemaps, which publish with upstream's registry and secrets.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    runs-on: forgejo-mvp
+    container: node:22-bookworm
+
+    steps:
+      - name: Checkout
+        uses: https://github.com/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup pnpm
+        uses: https://github.com/pnpm/action-setup@v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run CI checks
+        run: pnpm run ci:check
+
+      - name: Run tests
+        run: pnpm run test:ci
+
+      # Runs the leanWorkerBundle generateBundle assertion: fails if a
+      # denylisted package (dataforseo-client, autumn-js, ...) re-enters the
+      # worker's eager startup graph. See vite-plugin-lean-worker-bundle.ts.
+      - name: Build worker (eager-bundle guard)
+        run: pnpm vite build
+
+      - name: Install website dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Run website type checks
+        run: pnpm --dir web run types:check
+
+      # Prerender crawls a preview server at 127.0.0.1; in the job container
+      # localhost resolves to ::1 first unless IPv4 is preferred.
+      - name: Build website
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
+        run: pnpm --dir web run build
